@@ -22,6 +22,8 @@
 
 package Build::LiveBuild;
 
+use File::Basename;
+
 use strict;
 
 eval { require Archive::Tar; };
@@ -39,8 +41,41 @@ sub filter {
 }
 
 sub parse_package_list {
-  my ($content) = @_;
-  my @packages = split /\n/, filter($content);
+  my ($content, $filename) = @_;
+  my @packages = ();
+
+  my $flavour = basename($filename, (".livebuild"));
+  my @if_flavour = ();
+
+  my @lines = split /\n/, ${$content};
+  for (@lines) {
+    my $line = $_;
+
+    # Check for start of conditional
+    if ($line =~ /^#if FLAVOUR (.*)$/) {
+      die ("malformed package list: conditional in conditional") if @if_flavour;
+      @if_flavour = split / /, $1;
+    }
+
+    # Check for end of conditional
+    if ($line =~ /^#endif$/) {
+      die ("malformed package list: unexpected #endif") unless @if_flavour;
+      @if_flavour = ();
+    }
+
+    my $filtered = filter($line);
+
+    # Just skip this line if we have a comment etc
+    if ($filtered) {
+      if (@if_flavour) {
+        # If we're currently in a conditional, evaluate it before adding the
+        # package to the list
+        push @packages, $filtered if grep /^$flavour$/, @if_flavour;
+      } else {
+        push @packages, $filtered;
+      }
+    }
+  }
 
   return @packages;
 };
@@ -91,7 +126,7 @@ sub parse {
 
   for my $file ($tar->list_files('')) {
     next unless $file =~ /^(.*\/)?config\/package-lists\/.*\.list.*/;
-    push @packages, parse_package_list($tar->get_content($file));
+    push @packages, parse_package_list(\$tar->get_content($file), $filename);
   }
 
   ($ret->{'name'} = $filename) =~ s/\.[^.]+$//;
