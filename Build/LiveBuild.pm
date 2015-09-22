@@ -24,6 +24,8 @@ package Build::LiveBuild;
 
 use strict;
 
+require File::Spec;
+
 eval { require Archive::Tar; };
 *Archive::Tar::new = sub {die("Archive::Tar is not available\n")} unless defined &Archive::Tar::new;
 
@@ -39,8 +41,40 @@ sub filter {
 }
 
 sub parse_package_list {
-  my ($content) = @_;
-  my @packages = split /\n/, filter($content);
+  my ($content, $flavour) = @_;
+  my @packages = ();
+
+  my @if_flavour = ();
+
+  my @lines = split /\n/, ${$content};
+  for (@lines) {
+    my $line = $_;
+
+    # Check for start of conditional
+    if ($line =~ /^#if FLAVOUR (.*)$/) {
+      die ("malformed package list: conditional in conditional") if @if_flavour;
+      @if_flavour = split / /, $1;
+    }
+
+    # Check for end of conditional
+    if ($line =~ /^#endif$/) {
+      die ("malformed package list: unexpected #endif") unless @if_flavour;
+      @if_flavour = ();
+    }
+
+    my $filtered = filter($line);
+
+    # Just skip this line if we have a comment etc
+    if ($filtered) {
+      if (@if_flavour) {
+        # If we're currently in a conditional, evaluate it before adding the
+        # package to the list
+        push @packages, $filtered if grep /^$flavour$/, @if_flavour;
+      } else {
+        push @packages, $filtered;
+      }
+    }
+  }
 
   return @packages;
 };
@@ -85,13 +119,17 @@ sub parse {
     return $ret;
   }
 
+  # get the flavour from the top level directory of the tar
+  my $file = ($tar->list_files(''))[0];
+  my $flavour = (File::Spec->splitdir($file))[0];
+
   # always require the list of packages required by live-boot for
   # bootstrapping the target distribution image (e.g. with debootstrap)
   my @packages = ( 'live-build-desc' );
 
   for my $file ($tar->list_files('')) {
     next unless $file =~ /^(.*\/)?config\/package-lists\/.*\.list.*/;
-    push @packages, parse_package_list($tar->get_content($file));
+    push @packages, parse_package_list(\$tar->get_content($file), $flavour);
   }
 
   ($ret->{'name'} = $filename) =~ s/\.[^.]+$//;
